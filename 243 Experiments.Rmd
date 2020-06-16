@@ -1,0 +1,358 @@
+---
+title: "243 Experiments"
+author: "Keyuan Lin"
+date: "6/11/2020"
+output: html_document
+---
+
+
+# BLB Functions
+
+```{r}
+#------------------------------------------------#
+#   Main Function                                #
+#   bag of little bootstrap of ridge regression  #
+#                                                # 
+#   s: num of subsamples                         #
+#   r: iterations for each subsample             #
+#   true_widths: ground truth                    #
+#   return cummulate_time and relative error     #
+#------------------------------------------------#
+blb <- function(data, s = 10, r = 100, true_widths) {
+  
+  n <- dim(data)[1]
+  b <- as.integer(n/s) + 1
+  
+  cummulate_time <- c()
+  relative_error <- c()
+  
+  widths <- matrix(0, ncol(X), s)
+  
+  for (i in 1:s) {
+    
+    idx <- sample(1:n, b, replace = FALSE)
+    subsample <- data[idx,]
+    X <- subsample[,-ncol(subsample)]
+    y <- subsample[,ncol(subsample)]
+    
+    # estimate
+    coefs <- matrix(0, ncol(X), r) # save r d-dimensional coefs
+    begin_time = Sys.time()
+    
+    for (j in 1:r){
+      coefs[,j] <- rlm_each_boot(X, y, n)
+    }
+    # record time
+    each_end_time <- Sys.time()
+    time_diff <- as.numeric(each_end_time - begin_time)
+    cummulate_time <- c(cummulate_time, time_diff)
+    
+    # record estimators and error
+    widths[,i] <- apply(coefs, 1, get_CI_width)
+    mean_widths <- rowSums(widths) / i
+    relative_error <- c(relative_error, get_relative_error(mean_widths, true_widths))
+    
+  }
+  return(c(cummulate_time, relative_error))
+}
+
+#--------------------------------------#
+# get the width of 95% CI of each beta #
+#--------------------------------------#
+get_CI_width <- function(betas) {
+
+  return((quantile(betas, 0.975) - quantile(betas, 0.025)) / 2)
+  
+}
+
+#-------------------------------------------------------------------#
+# get the relative_error between the estimated width and true width #
+#-------------------------------------------------------------------#
+get_relative_error <- function(mean_widths, true_widths) {
+  
+  return(mean( abs(mean_widths - true_widths) / true_widths ))
+  
+}
+
+
+#--------------------------------#
+# ridge regression for each boot #
+#--------------------------------#
+rlm_each_boot <- function(X, y, n) {
+  
+  freqs <- rmultinom(1, n, rep(1, nrow(X)))
+  # ridge regression with lambda = 1e-5
+  fit <- glmnet(X, y, weights = freqs, alpha = 0, lambda = 1e-5) 
+  return(as.vector(fit$beta))
+  
+}
+  
+```
+
+
+# Bootstrap/Subsample/b out of n functions
+
+```{r}
+
+boot <- function(data, b, r = 100, true_widths, is_bootstrap) {
+  
+  cummulate_time <- c()
+  relative_error <- c()
+  
+  widths <- matrix(0, ncol(data)-1, r)
+  
+  n <- dim(data)[1]
+  
+  coefs <- matrix(0, ncol(data)-1, r)
+  
+  for (i in 1:r) {
+    
+    each_idx <- sample(1:n, b, replace = is_bootstrap)
+    each_data <- data[each_idx, ]
+    X <- each_data[,-ncol(each_data)]
+    y <- each_data[,ncol(each_data)]
+      
+    begin_time <- Sys.time()
+    fit <- glmnet(X, y, alpha = 0, lambda = 1e-5) 
+    coefs[,i] <- as.vector(fit$beta)
+    end_time <- Sys.time()
+    time_diff <- as.numeric(end_time - begin_time)
+    cummulate_time <- c(cummulate_time, time_diff)
+    
+    widths[,i] <- apply(coefs, 1, get_CI_width)
+    mean_widths <- rowSums(widths) / i
+    relative_error <- c(relative_error, get_relative_error(mean_widths, true_widths))
+
+  }
+  return(c(cummulate_time, relative_error))
+}
+```
+
+
+# ----------- Experiment: linear data with normal distribution-----------
+
+## Generate ground truth
+
+```{r}
+
+library(glmnet)
+
+d <- 100
+n <- 20000
+
+t <- 2000
+betas_matrix1 <- matrix(0, d, t)
+for (i in 1:t){
+  X <- matrix(rnorm(n * d, 0, 1), n, d)
+  epsilon <- rnorm (n, 0, 2)
+  y <- colSums(X) + epsilon
+  
+  fit <- glmnet(X, y, alpha = 0, lambda = 1e-5)
+  betas_matrix1[,i] <- as.vector(fit$beta)
+}
+
+true_widths_normal <- apply(betas_matrix1, 1, get_CI_width)
+```
+
+```{r}
+set.seed(30)
+X <- matrix(rnorm(n * d, 0, 1), n, d)
+epsilon <- rnorm (n, 0, 2)
+y <- colSums(X) + epsilon
+data <- cbind(X,y)
+```
+
+
+## BLB
+
+```{r}
+set.seed(5)
+
+b <- c(n^0.5, n^0.6, n^0.7, n^0.8, n^0.9)
+s_list <- as.integer(n/b)
+res_BLB_normal <- list()
+for (i in 1:length(s_list)) {
+  s <- s_list[i]
+  set.seed(80)
+  res_BLB_normal[[i]] <- blb(data, s = s, r = 100, true_widths = true_widths_normal)
+}
+# res_BLB_normal
+```
+
+
+## BOOT
+
+```{r}
+set.seed(5)
+res_BOOT_normal <- boot(data, b = n, r = 100, true_widths = true_widths_normal, is_bootstrap = TRUE)
+res_BOOT_normal
+```
+
+
+## BOFN 
+
+```{r}
+bs <- c(n^0.5, n^0.6, n^0.7, n^0.8, n^0.9)
+b_list <- as.integer(bs) 
+res_BOFN_normal <- list()
+for (i in 1:5) {
+  b <- b_list[i]
+  set.seed(80)
+  res_BOFN_normal[[i]] <- boot(data, b = b, r = 500, true_widths = true_widths_normal, is_bootstrap = TRUE)
+}
+# res_BOFN_normal
+```
+
+
+## Subsampling 
+
+```{r}
+bs <- c(n^0.5, n^0.6, n^0.7, n^0.8, n^0.9)
+b_list <- as.integer(bs) 
+res_SS_normal <- list()
+for (i in 1:5) {
+  b <- b_list[i]
+  res_SS_normal[[i]] <- boot(data, b = b, r = 500, true_widths = true_widths_normal, is_bootstrap = FALSE)
+}
+
+# res_SS_normal
+```
+
+
+# ----------- Visualization -------------
+
+```{r}
+get_cum_time <- function(time) {
+  cum_time <- time
+  for (i in 1: length(time)) {
+    cum_time[i] <- sum(time[1:i])
+  }
+  cum_time
+}
+```
+
+
+## BOOT (bootstrap)
+
+```{r}
+time0 <- get_cum_time(res_BOOT_normal[1 : 100])
+error0 <- res_BOOT_normal[101 : 200]
+```
+
+## 3 plots
+
+```{r fig.height=1.5, fig.width=4.5}
+
+## SS (subsample)
+
+par(mfrow = c(1,3))
+
+
+
+## BLB (bag of little bootstrap)
+
+
+time1 <- get_cum_time(res_BLB_normal[[1]][1 : 141])
+error1 <- res_BLB_normal[[1]][142 : 282]
+
+time2 <- get_cum_time(res_BLB_normal[[2]][1 : 52])
+error2 <- res_BLB_normal[[2]][53 : 104]
+
+time3 <- get_cum_time(res_BLB_normal[[3]][1 : 19])
+error3 <- res_BLB_normal[[3]][20 : 38]
+
+time4 <- get_cum_time(res_BLB_normal[[4]][1 : 7])
+error4 <- res_BLB_normal[[4]][8 : 14]
+
+time5 <- get_cum_time(res_BLB_normal[[5]][1 : 2])
+error5 <- res_BLB_normal[[5]][3 : 4]
+
+plot(time0, error0, col = 'black', type = 'l', 
+     xlim = c(0,16),
+     xlab = 'Time (sec)', ylab = 'Relative Error',
+     main = 'Bag of Little Bootstrap (BLB)')
+lines(time1, error1, col = 'blue')
+lines(time2, error2, col = 'red')
+lines(time3, error3, col = 'purple')
+lines(time4, error4, col = 'goldenrod3')
+lines(time5, error5, col = 'darkGreen')
+legend("topright",
+c("BOOT", "BLB-0.5", "BLB-0.6", "BLB-0.7", "BLB-0.8", "BLB-0.9"),
+fill=c("black","red", "purple", "goldenrod3", "darkGreen"))
+
+
+
+
+## BOFN (b out of n bootstrap)
+
+r <- 500
+
+time1 <- get_cum_time(res_BOFN_normal[[1]][1 : r])
+error1 <- res_BOFN_normal[[1]][(r+1) : (2*r)]
+
+time2 <- get_cum_time(res_BOFN_normal[[2]][1 : r])
+error2 <- res_BOFN_normal[[2]][(r+1) : (2*r)]
+
+time3 <- get_cum_time(res_BOFN_normal[[3]][1 : r])
+error3 <- res_BOFN_normal[[3]][(r+1) : (2*r)]
+
+time4 <- get_cum_time(res_BOFN_normal[[4]][1 : r])
+error4 <- res_BOFN_normal[[4]][(r+1) : (2*r)]
+
+time5 <- get_cum_time(res_BOFN_normal[[5]][1 : r])
+error5 <- res_BOFN_normal[[5]][(r+1) : (2*r)]
+
+plot(time0, error0, col = 'black', type = 'l',
+     xlim = c(0,16),
+     xlab = 'Time (sec)', ylab = 'Relative Error',
+     main = 'B out of N Bootstrap (BOFN)')
+lines(time1, error1, col = 'blue')
+lines(time2, error2, col = 'red')
+lines(time3, error3, col = 'purple')
+lines(time4, error4, col = 'goldenrod3')
+lines(time5, error5, col = 'darkGreen')
+legend("topright",
+c("BOOT", "BOFN-0.5", "BOFN-0.6", "BOFN-0.7", "BOFN-0.8", "BOFN-0.9"),
+fill=c("black", "blue","red", "purple", "goldenrod3", "darkGreen"))
+
+
+
+
+## Subsampling (SS)
+
+r <- 500
+
+time1 <- get_cum_time(res_SS_normal[[1]][1 : r])
+error1 <- res_SS_normal[[1]][(r+1) : (2*r)]
+
+time2 <- get_cum_time(res_SS_normal[[2]][1 : r])
+error2 <- res_SS_normal[[2]][(r+1) : (2*r)]
+
+time3 <- get_cum_time(res_SS_normal[[3]][1 : r])
+error3 <- res_SS_normal[[3]][(r+1) : (2*r)]
+
+time4 <- get_cum_time(res_SS_normal[[4]][1 : r])
+error4 <- res_SS_normal[[4]][(r+1) : (2*r)]
+
+time5 <- get_cum_time(res_SS_normal[[5]][1 : r])
+error5 <- res_SS_normal[[5]][(r+1) : (2*r)]
+
+plot(time0, error0, col = 'black', type = 'l', 
+     xlim = c(0,16),
+     xlab = 'Time (sec)', ylab = 'Relative Error',
+     main = 'Subsample (SS)')
+lines(time1, error1, col = 'blue')
+lines(time2, error2, col = 'red')
+lines(time3, error3, col = 'purple')
+lines(time4, error4, col = 'goldenrod3')
+lines(time5, error5, col = 'darkGreen')
+legend("topright",
+c("BOOT", "SS-0.5", "SS-0.6", "SS-0.7", "SS-0.8", "SS-0.9"),
+fill=c("black", "blue","red", "purple", "goldenrod3", "darkGreen"))
+
+
+
+
+
+```
+
